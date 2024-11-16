@@ -43,11 +43,13 @@ class Votes(models.Model):
         
 class Communities(models.Model):
     community_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey('Users', on_delete=models.SET_NULL, blank=True, null=True)
     title = models.TextField(unique=True)
     description = models.TextField()
     member_count = models.BigIntegerField(default=0)
     avatar_url = models.URLField(blank=True, null=True)
     tags = models.ManyToManyField('Tags', related_name='communities', blank=True)
+    approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     
     search_vector = SearchVectorField(null=True, blank=True)
@@ -170,7 +172,6 @@ class Users(models.Model):
     class Meta:
         db_table = 'Users'
 
-
 class AuthUser(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     # Add any other fields that are needed in the Supabase auth table
@@ -178,7 +179,20 @@ class AuthUser(models.Model):
     class Meta:
         managed = False  # Indicating that Django should not manage this table
         db_table = 'auth"."users'
-    
+        
+class UserRoles(models.Model):
+    # Role choices for role type
+    ROLE_CHOICES = [
+        ('user', 'User'),
+        ('admin', 'Admin'),
+    ] 
+
+    role = models.OneToOneField('Users', on_delete=models.CASCADE, primary_key=True, default=uuid.uuid4)  # Change 'User' to 'Users'
+    role_type = models.CharField(max_length=5, choices=ROLE_CHOICES, default='user')
+
+    class Meta:
+        db_table = 'UserRoles'
+
 class Comments(models.Model):
     comment_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     expert = models.ForeignKey('Users', on_delete=models.SET_NULL, blank=True, null=True)               # don't delete comment if user is removed (just make anon)
@@ -208,7 +222,9 @@ class Notifications(models.Model):
         ('answer_commented', 'New Comment'),
         ('question_upvoted', 'Answer Accepted'),
         ('answer_accepted', 'Mention'),
-        ('mention', 'Vote Received')
+        ('mention', 'Vote Received'),
+        ('community_accepted', 'Community Accepted'),
+        ('community_rejected', 'Community Rejected'),
     ]
 
     notification_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -219,6 +235,8 @@ class Notifications(models.Model):
     question = models.ForeignKey('Questions', on_delete=models.CASCADE, null=True, blank=True)
     answer = models.ForeignKey('Answers', on_delete=models.CASCADE, null=True, blank=True)
     comment = models.ForeignKey('Comments', on_delete=models.CASCADE, null=True, blank=True)
+    community = models.ForeignKey('Communities', on_delete=models.CASCADE, null=True, blank=True)
+    community_title = models.TextField(null=True, blank=True)
     actor = models.ForeignKey('Users', on_delete=models.SET_NULL, null=True, related_name='notifications_triggered')
     
     message = models.TextField()

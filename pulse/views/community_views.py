@@ -1,37 +1,144 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, parser_classes
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.http import JsonResponse, HttpRequest
 from django.http import JsonResponse
 from rest_framework import status
-from ..models import Communities, CommunityMembers, Users
+from django.conf import settings
+from ..models import Communities, CommunityMembers, Users, UserRoles
 from ..serializers import CommunitySerializer, CommunityMemberSerializer
 from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.core.paginator import Paginator, EmptyPage
 from django.db.models import Count, Q
 from uuid import UUID
+from services.notification_service import NotificationService
+from rest_framework.parsers import MultiPartParser
+from ..supabase_utils import get_supabase_client, create_bucket_if_not_exists
+
+'''POST Requests'''
 
 @api_view(["POST"])
-def createCommunity(request: HttpRequest) -> JsonResponse:
+@parser_classes([MultiPartParser])  # To handle file uploads
+def createCommunityRequest(request: HttpRequest) -> JsonResponse:
     """
-    Create a community using the CommunitySerializer to validate
+    Create a community request using the CommunitySerializer to validate
     and save the incoming data.
 
     Args:
         request (HttpRequest): The incoming HTTP request containing the data.
 
     Returns:
-        JsonResponse: A response with the created community's ID if successful,
+        JsonResponse: A response with the requested community ID if successful,
         or validation errors if the data is invalid.
     """
-    serializer = CommunitySerializer(
-        data=request.data
-    )  # Deserialize and validate the data
-    if serializer.is_valid():
-        community = serializer.save()  # Save the valid data as a new Community instance
-        return JsonResponse(
-            {"community_id": community.community_id, "title": community.title}, status=status.HTTP_201_CREATED
+    # Deserialize and validate the data
+    serializer = CommunitySerializer(data=request.data)
+    if not serializer.is_valid():
+        return JsonResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Save the valid data as a new Community instance
+    community = serializer.save()
+    
+    # Handle the optional image upload
+    avatar_file = request.FILES.get('avatar')
+    if avatar_file:
+        # Get Supabase client
+        supabase = get_supabase_client()
+
+        # Create bucket if it does not exist
+        if not create_bucket_if_not_exists('community-avatars'):
+            return JsonResponse({'error': 'Could not ensure bucket exists.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Set the upload path in Supabase Storage
+        upload_path = f"{community.community_id}/avatar"
+
+        # Upload the image file to Supabase Storage
+        image_content = avatar_file.read()
+        response = supabase.storage.from_("community-avatars").upload(
+            file=image_content,
+            path=upload_path,
+            file_options={"content-type": avatar_file.content_type, "upsert": "true"}
         )
-    return JsonResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if not response.path:
+            # Store the image URL in the community's data
+            community.avatar_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/community-avatars/{upload_path}"
+            community.save()
+        else:
+            return JsonResponse({"error": "Failed to upload community avatar"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return JsonResponse(
+        {"community_id": community.community_id, "title": community.title},
+        status=status.HTTP_201_CREATED
+    )
+
+@api_view(["POST"])
+def approveCommunityRequest(request: HttpRequest) -> JsonResponse:
+    """
+    Approve a community request by setting approved=True. 
+    Adds the owner as a community member if approval is successful.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing community_id and user_id.
+
+    Returns:
+        JsonResponse: A success message or an error message.
+    """
+    # Extract community_id and role from the request body
+    community_id = request.data.get('community_id')
+    user_id = request.data.get('user_id')
+    
+    # Get the community or return 404 if not found
+    community = get_object_or_404(Communities, community_id=community_id, approved=False)
+    user_role = get_object_or_404(UserRoles, role=user_id).role_type
+    
+    # Check if the user has admin privileges
+    if user_role != 'admin':
+        return JsonResponse({"error": "Unauthorized: Admin privileges required"}, status=status.HTTP_403_FORBIDDEN)
+
+    # Approve the community request
+    community.approved = True
+    community.save()
+
+    # Add the owner to CommunityMembers if there is an owner
+    if community.owner:
+        CommunityMembers.objects.create(community=community, user=community.owner)
+        community.member_count += 1  # Increment member count by 1
+        NotificationService.handle_community_accepted(community) # Handle notifications
+        community.save()
+        
+    return JsonResponse({"message": "Community request approved successfully"}, status=status.HTTP_200_OK)
+
+@api_view(["POST"])
+def rejectCommunityRequest(request: HttpRequest) -> JsonResponse:
+    """
+    Reject a community request by deleting the community from the database.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing community_id and user_id.
+
+    Returns:
+        JsonResponse: A success message or an error message.
+    """
+    # Extract community_id and role from the request body
+    community_id = request.data.get('community_id')
+    user_id = request.data.get('user_id')
+    
+    # Get the community or return 404 if not found
+    community = get_object_or_404(Communities, community_id=community_id, approved=False)
+    user_role = get_object_or_404(UserRoles, role=user_id).role_type
+    
+    # Check if the user has admin privileges
+    if user_role != 'admin':
+        return JsonResponse({"error": "Unauthorized: Admin privileges required"}, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get the community or return 404 if not found
+    community = get_object_or_404(Communities, community_id=community_id, approved=False)
+    NotificationService.handle_community_rejected(community.owner, community.title) # Handle notifications
+
+    # Delete the community request
+    community.delete()
+    
+    return JsonResponse({"message": "Community request rejected successfully"}, status=status.HTTP_200_OK)
 
 @api_view(["POST"])
 def addCommunityMember(request: HttpRequest) -> JsonResponse:
@@ -85,6 +192,8 @@ def removeCommunityMember(request: HttpRequest) -> JsonResponse:
 
     return JsonResponse({"message": "Remove successful"}, status=status.HTTP_200_OK)
 
+'''GET Requests'''
+
 @api_view(["GET"])
 def getAllCommunities(request: HttpRequest) -> JsonResponse:
     """
@@ -96,8 +205,8 @@ def getAllCommunities(request: HttpRequest) -> JsonResponse:
     selected_tags = request.GET.getlist('tags')  # Expecting UUIDs like ?tags=uuid1&tags=uuid2
     search_query = request.GET.get('search', '').strip()
 
-    # Start with all communities, ordered by creation date descending
-    communities = Communities.objects.all()
+    # Start with all approved communities, ordered by creation date descending
+    communities = Communities.objects.filter(approved=True)
 
     # Apply search filter if search_query is provided
     if search_query:
@@ -146,7 +255,7 @@ def getAllCommunities(request: HttpRequest) -> JsonResponse:
 @api_view(["GET"])
 def getAllCommunityOptions(request: HttpRequest) -> JsonResponse:
     """
-    Retrieve all communties from the database and serialize them
+    Retrieve all approved communties from the database and serialize them
     to JSON format.
 
     Args:
@@ -155,7 +264,7 @@ def getAllCommunityOptions(request: HttpRequest) -> JsonResponse:
     Returns:
         Json
     """
-    communities = Communities.objects.all()
+    communities = Communities.objects.filter(approved=True)
     serializer = CommunitySerializer(communities, many=True)
     return JsonResponse(serializer.data, safe=False)
 
@@ -194,9 +303,7 @@ def getCommunityById(request: HttpRequest, community_id: str) -> JsonResponse:
     Returns:
         JsonResponse: A response containing serialized data for the requested community.
     """
-    community = get_object_or_404(
-        Communities, community_id=community_id
-    )  # Get the community or return 404
+    community = get_object_or_404(Communities, community_id=community_id, approved=True)  # Get the community or return 404
     serializer = CommunitySerializer(community)  # Serialize the single instance to JSON
     return JsonResponse(serializer.data, status=status.HTTP_200_OK)
 
@@ -212,7 +319,7 @@ def getCommunityByTitle(request: HttpRequest, title: str) -> JsonResponse:
     Returns:
         JsonResponse: A response containing serialized data for the requested community.
     """
-    community = get_object_or_404(Communities, title=title)  # Get the community or return 404
+    community = get_object_or_404(Communities, title=title, approved=True)  # Get the community or return 404
     serializer = CommunitySerializer(community)  # Serialize the single instance to JSON
     return JsonResponse(serializer.data, status=status.HTTP_200_OK)
 
@@ -230,6 +337,22 @@ def getUserCommunitiesById(request: HttpRequest, user_id: str) -> JsonResponse:
     """
     communities = get_list_or_404(CommunityMembers, user=user_id)
     serializer = CommunityMemberSerializer(communities, many=True)  # Serialize multiple instances
+    return JsonResponse(serializer.data, safe=False, status=status.HTTP_200_OK)
+
+@api_view(["GET"])
+def getAllCommunityRequests(request: HttpRequest) -> JsonResponse:
+    """
+    Retrieve all community requests that are not yet approved, ordered by the oldest first.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request.
+
+    Returns:
+        JsonResponse: A response with a list of community requests.
+    """
+    # Filter for communities where approved is False and order by created_at (oldest first)
+    community_requests = Communities.objects.filter(approved=False).order_by('created_at')
+    serializer = CommunitySerializer(community_requests, many=True)
     return JsonResponse(serializer.data, safe=False, status=status.HTTP_200_OK)
 
 @api_view(["GET"])

@@ -11,6 +11,9 @@ urlpatterns = [
     # GET Requests
     path('getById/<str:user_id>/', user_views.getUserById, name='getUserById'),
     path('getByUsername/<str:username>/', user_views.getUserByUsername, name='getUserByUsername'),
+    path('getUserRoleById/<str:user_id>/', user_views.getUserRoleById, name='getUserRoleById'),
     path('userExists/<str:user_id>/', user_views.userExists, name='getUserById'),
+    
+    # PUT Requests
     path('updateProfileImageById/<str:user_id>/', user_views.updateProfileImageById, name="updateProfileImage"),
 ]

@@ -19,6 +19,11 @@ class UserSerializer(serializers.ModelSerializer):
             representation['reputation'] = 0
         
         return representation
+    
+class UserRolesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserRoles
+        fields = '__all__'
         
 class AnswerSerializer(serializers.ModelSerializer):
     # This allows us to get the user info of the answerer as a dictionary, based on the expert_id (for GET requests)
@@ -46,6 +51,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         
 class CommunitySerializer(serializers.ModelSerializer):
     rank = serializers.FloatField(read_only=True)
+    owner_info = UserSerializer(source='owner', read_only=True)
     
     class Meta:
         model = Communities
@@ -99,6 +105,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     answer_info = AnswerSerializer(source='answer', read_only=True)
     comment_info = CommentSerializer(source='comment', read_only=True)
     actor_info = UserSerializer(source='actor', read_only=True)
+    community_info = CommunitySerializer(source='community', read_only=True)
 
     class Meta:
         model = Notifications

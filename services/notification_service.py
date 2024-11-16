@@ -1,7 +1,7 @@
 # services/notification_service.py
 from typing import Optional, Dict, Any
 from django.db import transaction
-from pulse.models import Notifications, Questions, Answers, Comments
+from pulse.models import Notifications, Questions, Answers, Comments, Communities
 
 
 class NotificationService:
@@ -13,6 +13,8 @@ class NotificationService:
         'question_upvoted': 'Your question was upvoted',
         'answer_accepted': 'Your answer was accepted',
         'mention': 'You were mentioned in a {content_type}',
+        'community_accepted': 'Your community application was accepted',
+        'community_rejected': 'Your community application was rejected',
     }
 
     @classmethod
@@ -24,6 +26,8 @@ class NotificationService:
         question: Optional['Questions'] = None,
         answer: Optional['Answers'] = None,
         comment: Optional['Comments'] = None,
+        community: Optional['Communities'] = None,
+        community_title: Optional[str] = None,
         actor_id: Optional[str] = None,
         message: Optional[str] = None,
     ) -> Notifications:
@@ -36,6 +40,8 @@ class NotificationService:
             question: Related question (optional)
             answer: Related answer (optional)
             comment: Related comment (optional)
+            community: Related community (optional)
+            community_title: Title of the community (optional)
             actor_id: ID of the user who triggered the notification (optional)
             message: Custom message (optional, will use default if not provided)
         """
@@ -56,6 +62,8 @@ class NotificationService:
             question=question,
             answer=answer,
             comment=comment,
+            community=community,
+            community_title=community_title,
             read=False
         )
         
@@ -74,3 +82,23 @@ class NotificationService:
                 answer=answer,
                 actor_id=answer.expert
             )
+        
+    @classmethod
+    def handle_community_accepted(cls, community: 'Communities') -> None:
+        """Handle notifications for a community application being accepted."""
+        cls.create_notification(
+            recipient_id=community.owner,
+            notification_type='community_accepted',
+            community=community
+        )
+        
+    @classmethod
+    def handle_community_rejected(cls, user_id: str, community_title: str) -> None:
+        """Handle notifications for a community application being rejected.
+        Cannot include the community object since it was deleted."""
+        cls.create_notification(
+            recipient_id=user_id,
+            notification_type='community_rejected',
+            community_title=community_title
+        )
+        
